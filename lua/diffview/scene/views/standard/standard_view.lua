@@ -28,7 +28,7 @@ local StandardView = oop.create_class("StandardView", View.__get())
 ---StandardView constructor
 function StandardView:init(opt)
   opt = opt or {}
-  StandardView:super().init(self, opt)
+  self:super(opt)
   self.nulled = utils.sate(opt.nulled, false)
   self.panel = opt.panel or Panel()
   self.layouts = opt.layouts or {}
@@ -78,10 +78,15 @@ function StandardView:post_layout()
   if config.get_config().enhanced_diff_hl then
     self.winopts.diff2.a.winhl = {
       "DiffAdd:DiffviewDiffAddAsDelete",
-      "DiffDelete:DiffviewDiffDelete",
+      "DiffDelete:DiffviewDiffDeleteDim",
+      "DiffChange:DiffviewDiffChange",
+      "DiffText:DiffviewDiffText",
     }
     self.winopts.diff2.b.winhl = {
-      "DiffDelete:DiffviewDiffDelete",
+      "DiffDelete:DiffviewDiffDeleteDim",
+      "DiffAdd:DiffviewDiffAdd",
+      "DiffChange:DiffviewDiffChange",
+      "DiffText:DiffviewDiffText",
     }
   end
 
@@ -101,9 +106,9 @@ end
 ---@param layout Layout
 function StandardView:use_layout(layout)
   self.cur_layout = layout:clone()
-  self.layouts[layout:class()] = self.cur_layout
+  self.layouts[layout.class] = self.cur_layout
 
-  layout.pivot_producer = function()
+  self.cur_layout.pivot_producer = function()
     local was_open = self.panel:is_open()
     local was_only_win = was_open and #utils.tabpage_list_normal_wins(self.tabpage) == 1
     self.panel:close()
@@ -152,12 +157,12 @@ StandardView.use_entry = async.void(function(self, entry)
   local old_layout = self.cur_layout
   self.cur_entry = entry
 
-  if entry.layout:class() == self.cur_layout:class() then
+  if entry.layout.class == self.cur_layout.class then
     self.cur_layout.emitter = entry.layout.emitter
     await(self.cur_layout:use_entry(entry))
   else
-    if self.layouts[entry.layout:class()] then
-      self.cur_layout = self.layouts[entry.layout:class()]
+    if self.layouts[entry.layout.class] then
+      self.cur_layout = self.layouts[entry.layout.class]
       self.cur_layout.emitter = entry.layout.emitter
     else
       self:use_layout(entry.layout)

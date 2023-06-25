@@ -56,31 +56,26 @@ function HgAdapter.run_bootstrap()
   end
 
   local out = utils.job(vim.tbl_flatten({ hg_cmd, "version" }))
-  bs.version_string = out[1] and out[1]:match("Mercurial .*%(version (%S+)%)") or nil
-
-  if not bs.version_string then
+  local version = out[1] and out[1]:match("Mercurial .*%(version (%S*)%)") or nil
+  if not version then
     return err("Could not get Mercurial version!")
   end
 
   -- Parse version string
+  local major, minor, patch = version:match("(%d+)%.?(%d*)%.?(%d*)")
+  if not major then
+    return err(string.format("Could not parse Mercurial version: %s!", version))
+  end
+
   local v, target = bs.version, bs.target_version
+  v.major = tonumber(major)
+  v.minor = tonumber(minor) or 0
+  v.patch = tonumber(patch) or 0
+
+  bs.version_string = version
   bs.target_version_string = fmt("%d.%d.%d", target.major, target.minor, target.patch)
-  local parts = vim.split(bs.version_string, "%.")
-  v.major = tonumber(parts[1])
-  v.minor = tonumber(parts[2]) or 0
-  v.patch = tonumber(parts[3]) or 0
 
-  local version_ok = (function()
-    if v.major < target.major then
-      return false
-    elseif v.minor < target.minor then
-      return false
-    elseif v.patch < target.patch then
-      return false
-    end
-    return true
-  end)()
-
+  local version_ok = vcs_utils.check_semver(v, target)
   if not version_ok then
     return err(string.format(
       "Mercurial version is outdated! Some functionality might not work as expected, "
@@ -189,7 +184,7 @@ end
 
 function HgAdapter:init(opt)
   opt = opt or {}
-  HgAdapter:super().init(self, opt)
+  self:super(opt)
 
   self.ctx = {
     toplevel = opt.toplevel,
@@ -360,7 +355,6 @@ function HgAdapter:prepare_fh_options(log_options, single_file)
     base = base,
     path_args = log_options.path_args,
     flags = utils.vec_join(
-      o.rev and { "--rev=" .. o.rev } or nil,
       (o.follow and single_file) and { "--follow" } or nil,
       o.limit and { "--limit=" .. o.limit } or nil,
       o.no_merges and { "--no-merges" } or nil,
@@ -440,7 +434,7 @@ end
 ---@param self HgAdapter
 ---@param state HgAdapter.FHState
 ---@param callback fun(status: JobStatus, data?: table, msg?: string)
-HgAdapter.incremental_fh_data = async.wrap(function(self, state, callback)
+HgAdapter.incremental_fh_data = async.void(function(self, state, callback)
   local raw = {}
   local namestat_job, numstat_job, shutdown
 
@@ -615,6 +609,7 @@ HgAdapter.file_history_worker = async.void(function(self, co_state, opt, callbac
     return co_state.shutdown
   end
 
+  ---Yield until data is available
   ---@param cb (fun(status: JobStatus, new_data: table, err?: string))
   local data_scheduler = async.wrap(function(cb)
     data_idx = data_idx + 1
@@ -745,11 +740,25 @@ function HgAdapter:parse_fh_data(data, commit, state)
 
   for i = 1, #data.numstat - 1 do
     local status = data.namestat[i]:sub(1, 1):gsub("%s", " ")
-    local name = vim.trim(data.namestat[i]:match("[%a%s]%s*(.*)"))
-    local oldname
+    if status == 'R' then
+      -- R is for Removed in mercurial
+      status = 'D'
+    end
+
 
     local stats = {}
-    local changes, diffstats = data.numstat[i]:match(".*|%s+(%d+)%s+([+-]+)")
+    local name, changes, diffstats = data.numstat[i]:match("(.*)|%s+(%d+)%s*([+-]*)")
+    name = vim.trim(name)
+
+    local oldname
+    if name:match('=>') ~= nil then
+      oldname, name = name:match('(.*) => (.*)')
+      oldname = vim.trim(oldname)
+      name = vim.trim(name)
+      -- Mark as Renamed
+      status = 'R'
+    end
+
     if changes and diffstats then
       local _, adds = diffstats:gsub("+", "")
 
@@ -928,14 +937,18 @@ function HgAdapter:parse_revs(rev_arg, opt)
   return left, right
 end
 
-function HgAdapter:file_restore(path, kind, commit)
+---@param self HgAdapter
+---@param path string
+---@param kind vcs.FileKind
+---@param commit string?
+---@param callback fun(ok: boolean, undo?: string)
+HgAdapter.file_restore = async.wrap(function(self, path, kind, commit, callback)
   local _, code
   local abs_path = pl:join(self.ctx.toplevel, path)
 
   _, code = self:exec_sync({"cat", "--", path}, self.ctx.toplevel)
 
   local exists_hg = code == 0
-
   local undo
 
   if not exists_hg then
@@ -948,7 +961,8 @@ function HgAdapter:file_restore(path, kind, commit)
           fmt("Failed to delete buffer '%d'! Aborting file restoration. Error message:", bn),
           err
         }, true)
-        return false
+        callback(false)
+        return
       end
     end
 
@@ -960,7 +974,8 @@ function HgAdapter:file_restore(path, kind, commit)
           fmt("Failed to delete file '%s'! Aborting file restoration. Error message:", abs_path),
           err
         }, true)
-        return false
+        callback(false)
+        return
       end
     else
       -- File only exists in index
@@ -977,8 +992,8 @@ function HgAdapter:file_restore(path, kind, commit)
     )
   end
 
-  return true, undo
-end
+  callback(true, undo)
+end)
 
 ---Check whether untracked files should be listed.
 ---@param opt? VCSAdapter.show_untracked.Opt
@@ -1229,7 +1244,13 @@ HgAdapter.show = async.wrap(function(self, path, rev, callback)
     log_opt = { label = "HgAdapter:show()" },
     on_exit = async.void(function(_, ok, err)
       if not ok or job.code ~= 0 then
-        callback(utils.vec_join(err, job.stderr), nil)
+        -- Non zero exit code might mean the file was removed
+        local out = job.stderr and job.stderr[1] or ''
+        if out:match('no such file in rev') then
+          callback(nil, {})
+        else
+          callback(utils.vec_join(err, job.stderr), nil)
+        end
         return
       end
 

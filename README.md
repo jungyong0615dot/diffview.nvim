@@ -16,8 +16,8 @@ for any git rev.
 ## Requirements
 
 - Git ≥ 2.31.0 (for Git support)
-- Mercurial (for Mercurial support)
-- Neovim ≥ 0.7.0
+- Mercurial ≥ 5.4.0 (for Mercurial support)
+- Neovim ≥ 0.7.0 (with LuaJIT)
 - [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) (optional) For file icons
 
 ## Installation
@@ -26,7 +26,7 @@ Install the plugin with your package manager of choice.
 
 ```vim
 " Plug
-Plug "sindrets/diffview.nvim"
+Plug 'sindrets/diffview.nvim'
 ```
 
 ```lua
@@ -419,7 +419,7 @@ hooks = {
   view_opened = function(view)
     print(
       ("A new %s was opened on tab page %d!")
-      :format(view:class():name(), view.tabpage)
+      :format(view.class:name(), view.tabpage)
     )
   end,
 }

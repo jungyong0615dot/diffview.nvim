@@ -151,11 +151,11 @@ end
 ---@overload fun(self: VCSAdapter, args: string[], cwd?: string)
 ---@overload fun(self: VCSAdapter, args: string[], opt?: utils.job.Opt)
 function VCSAdapter:exec_sync(args, cwd_or_opt)
-  if not self:class().bootstrap.done then self:class().run_bootstrap() end
+  if not self.class.bootstrap.done then self.class.run_bootstrap() end
 
   local cmd = vim.tbl_flatten({ self:get_command(), args })
 
-  if not self:class().bootstrap.ok then
+  if not self.class.bootstrap.ok then
     logger:error(
       ("[VCSAdapter] Can't exec adapter command because bootstrap failed! Cmd: %s")
       :format(table.concat(cmd, " "))
@@ -302,14 +302,15 @@ function VCSAdapter:show_untracked(opt)
 end
 
 ---Restore file
+---@param self VCSAdapter
 ---@param path string
 ---@param kind vcs.FileKind
 ---@param commit string?
 ---@return boolean success
 ---@return string? undo # If the adapter supports it: a command that will undo the restoration.
-function VCSAdapter:file_restore(path, kind, commit)
+VCSAdapter.file_restore = async.void(function(self, path, kind, commit)
   oop.abstract_stub()
-end
+end)
 
 ---Update the index entry for a given file with the contents of an index buffer.
 ---@param file vcs.File

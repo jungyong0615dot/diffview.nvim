@@ -97,16 +97,7 @@ function GitAdapter.run_bootstrap()
   v.minor = tonumber(parts[2]) or 0
   v.patch = tonumber(parts[3]) or 0
 
-  local version_ok = (function()
-    if v.major < target.major then
-      return false
-    elseif v.minor < target.minor then
-      return false
-    elseif v.patch < target.patch then
-      return false
-    end
-    return true
-  end)()
+  local version_ok = vcs_utils.check_semver(v, target)
 
   if not version_ok then
     return err(string.format(
@@ -238,7 +229,7 @@ end
 ---@param opt vcs.adapter.VCSAdapter.Opt
 function GitAdapter:init(opt)
   opt = opt or {}
-  GitAdapter:super().init(self, opt)
+  self:super(opt)
 
   local cwd = opt.cpath or vim.loop.cwd()
 
@@ -395,7 +386,9 @@ function GitAdapter:prepare_fh_options(log_options, single_file)
       o.author and { "-E", "--author=" .. o.author } or nil,
       o.grep and { "-E", "--grep=" .. o.grep } or nil,
       o.G and { "-E", "-G" .. o.G } or nil,
-      o.S and { "-S" .. o.S, "--pickaxe-regex" } or nil
+      o.S and { "-S" .. o.S, "--pickaxe-regex" } or nil,
+      o.after and { "--after=" .. o.after } or nil,
+      o.before and { "--before=" .. o.before } or nil
     )
   }
 end
@@ -773,6 +766,8 @@ function GitAdapter:file_history_options(range, paths, argo)
     { "base" },
     { "G" },
     { "S" },
+    { "after", "since" },
+    { "before", "until" },
   }
 
   local log_options = { rev_range = range_arg } --[[@as GitLogOptions ]]
@@ -1353,17 +1348,19 @@ function GitAdapter:rev_to_args(left, right)
 end
 
 
+---@param self GitAdapter
 ---@param path string
 ---@param kind vcs.FileKind
 ---@param commit string?
-function GitAdapter:file_restore(path, kind, commit)
+---@param callback fun(ok: boolean, undo?: string)
+GitAdapter.file_restore = async.wrap(function(self, path, kind, commit, callback)
   local out, code
   local abs_path = pl:join(self.ctx.toplevel, path)
   local rel_path = pl:vim_fnamemodify(abs_path, ":~")
 
   -- Check if file exists in history
   _, code = self:exec_sync(
-    { "cat-file", "-e", fmt("%s:%s", kind == "staged" and "HEAD" or "", path) },
+    { "cat-file", "-e", fmt("%s:%s", commit or (kind == "staged" and "HEAD") or "", path) },
     self.ctx.toplevel
   )
   local exists_git = code == 0
@@ -1374,7 +1371,8 @@ function GitAdapter:file_restore(path, kind, commit)
     out, code = self:exec_sync({ "hash-object", "-w", "--", path }, self.ctx.toplevel)
     if code ~= 0 then
       utils.err("Failed to write file blob into the object database. Aborting file restoration.", true)
-      return false
+      callback(false)
+      return
     end
   end
 
@@ -1396,7 +1394,8 @@ function GitAdapter:file_restore(path, kind, commit)
           fmt("Failed to delete buffer '%d'! Aborting file restoration. Error message:", bn),
           err
         }, true)
-        return false
+        callback(false)
+        return
       end
     end
 
@@ -1408,7 +1407,8 @@ function GitAdapter:file_restore(path, kind, commit)
           fmt("Failed to delete file '%s'! Aborting file restoration. Error message:", abs_path),
           err
         }, true)
-        return false
+        callback(false)
+        return
       end
     else
       -- File only exists in index
@@ -1425,8 +1425,8 @@ function GitAdapter:file_restore(path, kind, commit)
     )
   end
 
-  return true, undo
-end
+  callback(true, undo)
+end)
 
 ---@param file vcs.File
 function GitAdapter:stage_index_file(file)
@@ -1796,6 +1796,12 @@ GitAdapter.flags = {
     FlagOption("=S", "-S", "Search occurrences", {
       prompt_label = "(Extended regular expression)"
     }),
+    FlagOption("=A", "--after=", "List only commits after a certain date", {
+      prompt_label = "(YYYY-mm-dd, YYYY-mm-dd HH:mm:ss)"
+    }),
+    FlagOption("=B", "--before=", "List only commits before a certain date", {
+      prompt_label = "(YYYY-mm-dd, YYYY-mm-dd HH:mm:ss)"
+    }),
     FlagOption("--", "--", "Limit to files", {
       key = "path_args",
       expect_list = true,
@@ -1952,6 +1958,8 @@ function GitAdapter:init_completion()
   self.comp.file_history:put({ "--grep" }, {})
   self.comp.file_history:put({ "-G" }, {})
   self.comp.file_history:put({ "-S" }, {})
+  self.comp.file_history:put({ "--after", "--since" }, {})
+  self.comp.file_history:put({ "--before", "--until" }, {})
 end
 
 M.GitAdapter = GitAdapter

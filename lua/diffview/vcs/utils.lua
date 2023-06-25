@@ -1,8 +1,9 @@
-local Scanner = require("diffview.scanner")
 local FileDict = require("diffview.vcs.file_dict").FileDict
 local RevType = require("diffview.vcs.rev").RevType
+local Scanner = require("diffview.scanner")
 local Semaphore = require("diffview.control").Semaphore
 local async = require("diffview.async")
+local oop = require("diffview.oop")
 local utils = require("diffview.utils")
 
 local api = vim.api
@@ -12,13 +13,13 @@ local fmt = string.format
 local M = {}
 
 ---@enum JobStatus
-local JobStatus = {
+local JobStatus = oop.enum({
   SUCCESS  = 1,
   PROGRESS = 2,
   ERROR    = 3,
   KILLED   = 4,
   FATAL    = 5,
-}
+})
 
 ---@type diffview.Job[]
 local sync_jobs = {}
@@ -150,18 +151,16 @@ end, 7)
 ---@param path string
 ---@param kind vcs.FileKind
 ---@param commit? string
-M.restore_file = async.wrap(function(adapter, path, kind, commit, callback)
-  local ok, undo = adapter:file_restore(path, kind, commit)
+M.restore_file = async.void(function(adapter, path, kind, commit)
+  local ok, undo = await(adapter:file_restore(path, kind, commit))
 
   if not ok then
     utils.err("Failed to revert file! See ':DiffviewLog' for details.", true)
-    return callback()
+    return
   end
 
   local rev_name = (commit and commit:sub(1, 11)) or (kind == "staged" and "HEAD" or "index")
   utils.info(fmt("File restored from %s. %s", rev_name, undo and "Undo with " .. undo), true)
-
-  callback()
 end)
 
 --[[
@@ -599,6 +598,20 @@ function M.parse_conflicts(lines, winid)
   end
 
   return ret, cur_conflict, cur_idx or 0
+end
+
+---@param version { major: integer, minor: integer, patch: integer }
+---@param required { major: integer, minor: integer, patch: integer }
+---@return boolean
+function M.check_semver(version, required)
+  if version.major ~= required.major then
+    return version.major > required.major
+  elseif version.minor ~= required.minor then
+    return version.minor > required.minor
+  elseif version.patch ~= required.patch then
+    return version.patch > required.patch
+  end
+  return true
 end
 
 
